@@ -1,13 +1,13 @@
 """
 =============================================================================
-PROJECT 1: Behavioral Credit Scoring System (Real-World Case)
-SQL Analytics Engine — Production-Grade Edition
+PROJECT 1: Behavioral Credit Scoring System
+SQL Analytics & Feature Engineering Engine
 =============================================================================
 Dataset: UCI Default of Credit Card Clients (30,000 real records)
-Demonstrates:
-  - Deep SQL analysis on historical payment delinquency (PAY_0-6)
-  - Credit Utilization modeling (Bill Amount vs Balance Limit)
-  - Aggregated Risk Decile analysis on real financial behaviors
+Business Case:
+  - This engine performs the heavy lifting for raw data transformation.
+  - SQL-engineered features (Utilization ratios, delinquency lags) are the
+    primary inputs for the subsequent Machine Learning risk model.
 =============================================================================
 """
 
@@ -24,7 +24,7 @@ DATA_DIR = Path(".")
 DB   = BASE / "credit_scoring.db"
 
 # ---------------------------------------------------------------------------
-# 1. SCHEMA DESIGN (Real-World Credit Schema)
+# 1. SCHEMA DESIGN
 # ---------------------------------------------------------------------------
 DDL = """
 DROP TABLE IF EXISTS credit_history;
@@ -57,38 +57,48 @@ CREATE TABLE credit_history (
     default_label          INTEGER NOT NULL,
     ingested_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX idx_default_limit ON credit_history(default_label, limit_bal);
-CREATE INDEX idx_age_default    ON credit_history(age, default_label);
 """
 
 # ---------------------------------------------------------------------------
-# 2. ANALYTICAL SQL QUERIES (Production-Grade Analytics)
+# 2. FEATURE ENGINEERING (SQL -> ML CONNECTION)
 # ---------------------------------------------------------------------------
 
 QUERIES = {
 
-    # Query 1: Risk Decile Analysis (Real Data)
+    # Highlight 1: Behavioral Risk Features (Feature Engineering for ML)
+    "ml_feature_engineering_preview": """
+        SELECT
+            id,
+            limit_bal,
+            -- Utilization Ratio: How much limit is the user exhausting?
+            CASE WHEN limit_bal > 0 THEN bill_amt_sep / limit_bal ELSE 0 END AS feature_utilization,
+            -- Delinquency Intensity: Weighted sum of payment delays
+            (pay_status_sep * 1.5 + pay_status_aug * 1.0) AS feature_delinquency_weight,
+            -- Outcome for Training
+            default_label AS target
+        FROM credit_history
+        LIMIT 10;
+    """,
+
+    # Highlight 2: Portfolio Health Profile
     "risk_decile_analysis": """
         WITH scored AS (
             SELECT
                 id,
                 limit_bal,
                 default_label,
-                -- Use weighted payment delinquency as a proxy score
-                (pay_status_sep * 2.0 + pay_status_aug * 1.5 + pay_status_jul) AS delinquency_score
+                (pay_status_sep * 2.0 + pay_status_aug) AS raw_agg_score
             FROM credit_history
         ),
         deciled AS (
             SELECT
                 *,
-                NTILE(10) OVER (ORDER BY delinquency_score DESC) AS risk_decile
+                NTILE(10) OVER (ORDER BY raw_agg_score DESC) AS risk_decile
             FROM scored
         )
         SELECT
             risk_decile,
             COUNT(*)                                AS total_customers,
-            SUM(default_label)                      AS defaults,
             ROUND(AVG(default_label) * 100, 2)     AS default_rate_pct,
             ROUND(AVG(limit_bal), 0)                AS avg_limit_balance
         FROM deciled
@@ -96,71 +106,12 @@ QUERIES = {
         ORDER BY risk_decile;
     """,
 
-    # Query 2: Credit Utilization vs Default (Dynamic Calculation)
-    "utilization_risk_profile": """
-        WITH util_agg AS (
-            SELECT
-                id,
-                default_label,
-                limit_bal,
-                -- Calculate Sept Utilization ratio
-                CASE WHEN limit_bal > 0 THEN bill_amt_sep / limit_bal ELSE 0 END AS util_ratio
-            FROM credit_history
-        ),
-        util_buckets AS (
-            SELECT
-                *,
-                CASE
-                    WHEN util_ratio <= 0.1 THEN '0-10% (Low)'
-                    WHEN util_ratio <= 0.3 THEN '10-30% (Standard)'
-                    WHEN util_ratio <= 0.7 THEN '30-70% (High)'
-                    ELSE                        '70%+ (Critical)'
-                END AS util_band
-            FROM util_agg
-        )
-        SELECT
-            util_band,
-            COUNT(*)                            AS customer_count,
-            ROUND(AVG(default_label) * 100, 2) AS default_rate_pct,
-            RANK() OVER (ORDER BY AVG(default_label) DESC) AS risk_rank
-        FROM util_buckets
-        GROUP BY util_band
-        ORDER BY default_rate_pct DESC;
-    """,
-
-    # Query 3: Delinquency Persistence (LAG Analysis)
-    "delinquency_trend_impact": """
-        WITH trend AS (
-            SELECT
-                id,
-                default_label,
-                pay_status_sep,
-                pay_status_aug,
-                CASE 
-                    WHEN pay_status_sep > 0 AND pay_status_aug > 0 THEN 'Persistent Delinquency'
-                    WHEN pay_status_sep > 0 AND pay_status_aug <= 0 THEN 'Recent Delinquency'
-                    WHEN pay_status_sep <= 0 AND pay_status_aug > 0 THEN 'Recovering'
-                    ELSE 'Healthy'
-                END AS delinquency_type
-            FROM credit_history
-        )
-        SELECT
-            delinquency_type,
-            COUNT(*) AS count,
-            ROUND(AVG(default_label) * 100, 2) AS default_rate_pct
-        FROM trend
-        GROUP BY delinquency_type
-        ORDER BY default_rate_pct DESC;
-    """,
-
-    # Query 4: Portfolio Summary (KPI Dashboard)
-    "portfolio_summary": """
+    # Highlight 3: Portfolio Aggregates
+    "portfolio_kpis": """
         SELECT
             COUNT(*)                                         AS total_records,
             ROUND(AVG(limit_bal), 0)                        AS avg_credit_limit,
-            SUM(default_label)                               AS total_defaults,
-            ROUND(AVG(default_label) * 100, 2)              AS overall_default_rate_pct,
-            ROUND(AVG(age), 1)                              AS avg_customer_age
+            ROUND(AVG(default_label) * 100, 2)              AS overall_default_rate_pct
         FROM credit_history;
     """
 }
@@ -194,7 +145,7 @@ def process_and_load():
     con.executescript(DDL)
     df.to_sql("credit_history", con, if_exists="append", index=False)
     con.commit()
-    print(f"✅ Real-world data loaded into SQLite: {len(df)} records.")
+    print(f"✅ Real-world data loaded. {len(df)} records in SQLite.")
     return con
 
 def run_analytics(con):
@@ -211,8 +162,8 @@ def run_analytics(con):
 
 def plot_visuals(results):
     sns.set_theme(style="darkgrid", palette="muted")
-    fig = plt.figure(figsize=(20, 12), facecolor="#f0f2f6")
-    fig.suptitle("Pallav Technologies — Behavioral Credit Risk Dashboard (UCI Real Data)",
+    fig = plt.figure(figsize=(20, 12), facecolor="#f0f2f7")
+    fig.suptitle("Fintech Operations — Portfolio Behavioral Credit Dashboard",
                  fontsize=22, fontweight="bold", y=0.98)
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.3, wspace=0.25)
 
@@ -220,41 +171,30 @@ def plot_visuals(results):
     ax1 = fig.add_subplot(gs[0, 0])
     d1 = results["risk_decile_analysis"]
     sns.barplot(x="risk_decile", y="default_rate_pct", data=d1, ax=ax1, palette="Reds_r")
-    ax1.set_title("Default Rate by Delinquency Decile (NTILE Analytics)", fontsize=14)
-    ax1.set_ylabel("Default Rate (%)")
+    ax1.set_title("Default Rate by Risk Decile (NTILE 10)", fontsize=14)
 
-    # Plot 2: Utilization Bands
+    # Plot 2: Exposure Sum
     ax2 = fig.add_subplot(gs[0, 1])
-    d2 = results["utilization_risk_profile"]
-    sns.barplot(x="util_band", y="default_rate_pct", data=d2.sort_values("default_rate_pct"), ax=ax2, palette="viridis")
-    ax2.set_title("Default Risk vs Credit Utilization Ratio", fontsize=14)
-    ax2.set_ylabel("Default Rate (%)")
-
-    # Plot 3: Delinquency Persistence
-    ax3 = fig.add_subplot(gs[1, 0])
-    d3 = results["delinquency_trend_impact"]
-    sns.barplot(x="delinquency_type", y="default_rate_pct", data=d3, ax=ax3, palette="magma")
-    ax3.set_title("Impact of Persistent vs Recent Delinquency", fontsize=14)
-    ax3.set_ylabel("Default Rate (%)")
-
-    # Plot 4: KPI Text box
-    ax4 = fig.add_subplot(gs[1, 1])
-    ax4.axis("off")
-    kpi = results["portfolio_summary"].iloc[0]
+    ax2.axis("off")
+    kpi = results["portfolio_kpis"].iloc[0]
     summary_text = (
-        f"  Total Records Analyze: {int(kpi['total_records']):,}\n\n"
-        f"  Overall Default Rate  : {kpi['overall_default_rate_pct']}%\n"
-        f"  Avg Credit Limit      : ${kpi['avg_credit_limit']:,}\n"
-        f"  Total Delinquent Cases: {int(kpi['total_defaults']):,}\n"
-        f"  Avg Customer Age      : {kpi['avg_customer_age']} Yrs\n"
+        f"  Total Portfolio View     : {int(kpi['total_records']):,}\n\n"
+        f"  Average Credit Limit     : ₹{int(kpi['avg_credit_limit']):,}\n"
+        f"  Base Default Rate        : {kpi['overall_default_rate_pct']}%\n"
     )
-    ax4.text(0.1, 0.5, summary_text, fontsize=16, family="monospace",
-             bbox=dict(boxstyle="round", facecolor="white", alpha=0.5))
-    ax4.set_title("Portfolio Summary KPIs", fontsize=16, fontweight="bold")
+    ax2.text(0.1, 0.45, summary_text, fontsize=18, family="monospace",
+             bbox=dict(boxstyle="round", facecolor="white", alpha=0.9))
+    ax2.set_title("Portfolio Summary KPIs", fontsize=16, fontweight="bold")
+
+    # Plot 3: SQL Engineered Feature Distribution (Example)
+    ax3 = fig.add_subplot(gs[1, 0])
+    d_feat = results["ml_feature_engineering_preview"]
+    sns.scatterplot(x="feature_utilization", y="feature_delinquency_weight", hue="target", data=d_feat, ax=ax3, s=100)
+    ax3.set_title("Engineered Features vs Target (SQL-ML Link)", fontsize=14)
 
     out_path = BASE / "credit_scoring_sql_dashboard.png"
     plt.savefig(out_path, dpi=120, bbox_inches="tight")
-    print(f"✅ Professional dashboard generated: {out_path}")
+    print(f"✅ SQL dashboard generated: {out_path}")
 
 if __name__ == "__main__":
     connection = process_and_load()
