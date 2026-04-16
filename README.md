@@ -18,4 +18,3 @@ This project demonstrates an AI-powered credit underwriting solution designed fo
 - `*.png`: Visualizations of feature importance and SHAP summary.
 
 ---
-*Created for Pallav Technologies Data Analyst Portfolio.*
